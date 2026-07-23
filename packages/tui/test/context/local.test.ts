@@ -62,6 +62,36 @@ test("snapshots effective models for every primary visible agent", () => {
   })
 })
 
+test("pinning current models prevents fallback drift across agents", () => {
+  const valid = () => true
+  const agents = [{ name: "build" }, { name: "plan" }]
+  const startupModel = { providerID: "openai", modelID: "startup" }
+  const pickedPlan = { providerID: "anthropic", modelID: "plan-picked" }
+  const modelStore: Record<string, { providerID: string; modelID: string } | undefined> = {}
+  let fallback: { providerID: string; modelID: string } = startupModel
+  const snap = (agent?: string) =>
+    selectionSnapshot({
+      agent,
+      agents,
+      model: (a) => resolveModel(valid, modelStore[a.name], undefined, fallback),
+      variant: () => undefined,
+    })
+  const before = snap()
+  expect(before.models.build).toEqual(startupModel)
+  expect(before.models.plan).toEqual(startupModel)
+  // Pin current effective models before updating fallback
+  for (const a of agents) {
+    const current = resolveModel(valid, modelStore[a.name], undefined, fallback)
+    if (current) modelStore[a.name] = current
+  }
+  // Now pick plan model (simulates model.set + recent update)
+  modelStore.plan = pickedPlan
+  fallback = pickedPlan
+  const after = snap("plan")
+  expect(after.models.build).toEqual(startupModel)
+  expect(after.models.plan).toEqual(pickedPlan)
+})
+
 test("emits structural selection and session changes but suppresses no-ops", async () => {
   const fixture = createRoot((dispose) => {
     const [current, setCurrent] = createSignal<TuiSelection>(
