@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import Notifications from "../../../../src/feature-plugins/system/notifications"
 import type { Event, PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
-import type { TuiAttentionNotifyInput } from "@opencode-ai/plugin/tui"
+import type { TuiAttentionNotifyInput, TuiEventBus } from "@opencode-ai/plugin/tui"
 import { createTuiPluginApi } from "../../../fixture/tui-plugin"
 
 async function setup() {
@@ -33,9 +33,9 @@ async function setup() {
         },
       },
       event: {
-        on: <Type extends Event["type"]>(type: Type, handler: (event: Extract<Event, { type: Type }>) => void) => {
+        on: ((type: Event["type"], handler: (event: Event) => void) => {
           const list = handlers.get(type) ?? []
-          const wrapped = handler as (event: Event) => void
+          const wrapped = handler
           list.push(wrapped)
           handlers.set(type, list)
           return () => {
@@ -44,7 +44,7 @@ async function setup() {
               (handlers.get(type) ?? []).filter((item) => item !== wrapped),
             )
           }
-        },
+        }) as TuiEventBus["on"],
       },
       state: {
         session: {

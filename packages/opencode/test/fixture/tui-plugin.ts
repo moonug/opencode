@@ -100,6 +100,7 @@ type Opts = {
     provider?: HostPluginApi["state"]["provider"]
     path?: HostPluginApi["state"]["path"]
     vcs?: HostPluginApi["state"]["vcs"]
+    selection?: HostPluginApi["state"]["selection"]
     session?: Partial<HostPluginApi["state"]["session"]>
     part?: HostPluginApi["state"]["part"]
     lsp?: HostPluginApi["state"]["lsp"]
@@ -312,6 +313,7 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
       get vcs() {
         return opts.state?.vcs
       },
+      selection: opts.state?.selection ?? (() => ({ models: {} })),
       session: {
         count: opts.state?.session?.count ?? (() => 0),
         get: opts.state?.session?.get ?? (() => undefined),
