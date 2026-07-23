@@ -64,7 +64,7 @@ export function selectionSnapshot<Agent extends { name: string }>(input: {
   variant: (model: { providerID: string; modelID: string }) => string | undefined
 }): TuiSelection {
   const models: Record<string, TuiSelectionModel> = {}
-  for (const agent of input.agents) {
+  for (const agent of input.agents.toSorted((a, b) => a.name.localeCompare(b.name))) {
     const model = input.model(agent)
     if (!model) continue
     const variant = input.variant(model)
@@ -295,7 +295,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         if (!value) return
         const provider = sync.data.provider.find((item) => item.id === m.providerID)
         const variants = provider?.models[m.modelID]?.variants
-        return variants && value in variants ? value : undefined
+        return variants && Object.hasOwn(variants, value) ? value : undefined
       }
 
       return {

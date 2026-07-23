@@ -42,7 +42,7 @@ test("snapshots effective models for every primary visible agent", () => {
     selectionSnapshot({
       sessionID: "dummy",
       agent: "build",
-      agents: [{ name: "build" }, { name: "plan" }, { name: "general" }],
+      agents: [{ name: "plan" }, { name: "general" }, { name: "build" }],
       model: (agent) =>
         resolveModel(
           valid,
@@ -56,8 +56,8 @@ test("snapshots effective models for every primary visible agent", () => {
     agent: "build",
     models: {
       build: { providerID: "openai", modelID: "gpt-5", variant: "high" },
-      plan: { providerID: "anthropic", modelID: "claude" },
       general: fallback,
+      plan: { providerID: "anthropic", modelID: "claude" },
     },
   })
 })
