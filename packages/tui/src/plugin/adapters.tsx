@@ -1,4 +1,10 @@
-import type { TuiDialogSelectOption, TuiPluginApi, TuiSlotProps } from "@opencode-ai/plugin/tui"
+import type {
+  TuiDialogSelectOption,
+  TuiEventBus,
+  TuiPluginApi,
+  TuiSelectionChangedEvent,
+  TuiSlotProps,
+} from "@opencode-ai/plugin/tui"
 import type { TuiConfig } from "../config"
 import type { useEvent } from "../context/event"
 import type { useRoute } from "../context/route"
@@ -8,6 +14,7 @@ import type { useTheme } from "../context/theme"
 import { Dialog as DialogUI, type useDialog } from "../ui/dialog"
 import type { useOpencodeKeymap } from "../keymap"
 import type { useKV } from "../context/kv"
+import type { useLocal } from "../context/local"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { DialogPrompt } from "../ui/dialog-prompt"
@@ -29,6 +36,7 @@ type Input = {
   route: ReturnType<typeof useRoute>
   routes: PluginRoutes
   event: ReturnType<typeof useEvent>
+  local: ReturnType<typeof useLocal>
   sdk: ReturnType<typeof useSDK>
   sync: ReturnType<typeof useSync>
   theme: ReturnType<typeof useTheme>
@@ -95,7 +103,7 @@ function mapOptionCb<Value>(cb?: (item: TuiDialogSelectOption<Value>) => void) {
   return (item: SelectOption<Value>) => cb(pickOption(item))
 }
 
-function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
+function stateApi(sync: ReturnType<typeof useSync>, local: ReturnType<typeof useLocal>): TuiPluginApi["state"] {
   return {
     get ready() {
       return sync.ready
@@ -158,6 +166,20 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
           status: item.status,
           error: item.status === "failed" ? item.error : undefined,
         }))
+    },
+    selection() {
+      return local.selection.current()
+    },
+  }
+}
+
+function eventApi(input: Pick<Input, "event" | "local">): TuiEventBus {
+  return {
+    on(type, handler) {
+      if (type === "tui.selection.changed") {
+        return input.local.selection.subscribe(handler as (event: TuiSelectionChangedEvent) => void)
+      }
+      return (input.event.on as TuiEventBus["on"])(type, handler)
     },
   }
 }
@@ -297,11 +319,11 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
         return input.kv.ready
       },
     },
-    state: stateApi(input.sync),
+    state: stateApi(input.sync, input.local),
     get client() {
       return input.sdk.client
     },
-    event: input.event,
+    event: eventApi(input),
     renderer: input.renderer,
     slots: {
       register() {

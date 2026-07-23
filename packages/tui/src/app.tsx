@@ -395,6 +395,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       route,
       routes: pluginRuntime.routes,
       event,
+      local,
       sdk,
       sync,
       theme: themeState,

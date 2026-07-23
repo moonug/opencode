@@ -396,6 +396,27 @@ export type TuiState = {
   part: (messageID: string) => ReadonlyArray<Part>
   lsp: () => ReadonlyArray<TuiSidebarLspItem>
   mcp: () => ReadonlyArray<TuiSidebarMcpItem>
+  selection: () => TuiSelection
+}
+
+export type TuiSelectionModel = {
+  providerID: string
+  modelID: string
+  variant?: string
+}
+
+export type TuiSelection = {
+  sessionID?: string
+  agent?: string
+  models: Readonly<Record<string, TuiSelectionModel>>
+}
+
+export type TuiSelectionChangedEvent = {
+  type: "tui.selection.changed"
+  data: {
+    previous?: TuiSelection
+    current: TuiSelection
+  }
 }
 
 type TuiBindingLookupView = {
@@ -517,7 +538,10 @@ export type TuiSlots = {
 }
 
 export type TuiEventBus = {
-  on: <Type extends Event["type"]>(type: Type, handler: (event: Extract<Event, { type: Type }>) => void) => () => void
+  on: <Type extends (Event | TuiSelectionChangedEvent)["type"]>(
+    type: Type,
+    handler: (event: Extract<Event | TuiSelectionChangedEvent, { type: Type }>) => void,
+  ) => () => void
 }
 
 export type TuiDispose = () => void | Promise<void>

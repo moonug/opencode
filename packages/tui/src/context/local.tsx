@@ -1,6 +1,7 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { batch, createEffect, createMemo } from "solid-js"
+import type { TuiSelection, TuiSelectionChangedEvent, TuiSelectionModel } from "@opencode-ai/plugin/tui"
 import { useSync } from "./sync"
 import { useEvent } from "./event"
 import path from "path"
@@ -48,6 +49,61 @@ export function recentModels(
     .map((item) => ({ providerID: item.providerID, modelID: item.modelID }))
 }
 
+export function resolveModel(
+  valid: (model: { providerID: string; modelID: string }) => boolean,
+  ...models: ({ providerID: string; modelID: string } | undefined)[]
+) {
+  return models.find((model) => model && valid(model))
+}
+
+export function selectionSnapshot<Agent extends { name: string }>(input: {
+  sessionID?: string
+  agent?: string
+  agents: ReadonlyArray<Agent>
+  model: (agent: Agent) => { providerID: string; modelID: string } | undefined
+  variant: (model: { providerID: string; modelID: string }) => string | undefined
+}): TuiSelection {
+  const models: Record<string, TuiSelectionModel> = {}
+  for (const agent of input.agents) {
+    const model = input.model(agent)
+    if (!model) continue
+    const variant = input.variant(model)
+    models[agent.name] = { ...model, ...(variant ? { variant } : {}) }
+  }
+  return {
+    ...(input.sessionID?.startsWith("ses_") ? { sessionID: input.sessionID } : {}),
+    ...(input.agent ? { agent: input.agent } : {}),
+    models,
+  }
+}
+
+export function createSelectionState(current: () => TuiSelection) {
+  const handlers = new Set<(event: TuiSelectionChangedEvent) => void>()
+  let previous: TuiSelection | undefined
+  let key: string | undefined
+
+  createEffect(() => {
+    const value = current()
+    const next = JSON.stringify(value)
+    if (next === key) return
+    const event: TuiSelectionChangedEvent = {
+      type: "tui.selection.changed",
+      data: { previous, current: value },
+    }
+    previous = value
+    key = next
+    for (const handler of handlers) handler(event)
+  })
+
+  return {
+    current,
+    subscribe(handler: (event: TuiSelectionChangedEvent) => void) {
+      handlers.add(handler)
+      return () => handlers.delete(handler)
+    },
+  }
+}
+
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
   init: () => {
@@ -64,14 +120,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((item) => item.id === model.providerID)
       return !!provider?.models[model.modelID]
-    }
-
-    function getFirstValidModel(...modelFns: (() => { providerID: string; modelID: string } | undefined)[]) {
-      for (const modelFn of modelFns) {
-        const model = modelFn()
-        if (!model) continue
-        if (isModelValid(model)) return model
-      }
     }
 
     function createAgent() {
@@ -233,19 +281,27 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         }
       })
 
+      function modelFor(a: { name: string; model?: { providerID: string; modelID: string } }) {
+        return resolveModel(isModelValid, modelStore.model[a.name], a.model, fallbackModel())
+      }
+
       const currentModel = createMemo(() => {
         const a = agent.current()
-        return (
-          getFirstValidModel(
-            () => a && modelStore.model[a.name],
-            () => a && a.model,
-            fallbackModel,
-          ) ?? undefined
-        )
+        return a ? modelFor(a) : undefined
       })
+
+      function variantFor(m: { providerID: string; modelID: string }) {
+        const value = modelStore.variant[`${m.providerID}/${m.modelID}`]
+        if (!value) return
+        const provider = sync.data.provider.find((item) => item.id === m.providerID)
+        const variants = provider?.models[m.modelID]?.variants
+        return variants && value in variants ? value : undefined
+      }
 
       return {
         current: currentModel,
+        forAgent: modelFor,
+        variantFor,
         get ready() {
           return modelStore.ready
         },
@@ -367,10 +423,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return modelStore.variant[key]
           },
           current() {
-            const v = this.selected()
-            if (!v) return undefined
-            if (!this.list().includes(v)) return undefined
-            return v
+            const m = currentModel()
+            return m ? variantFor(m) : undefined
           },
           list() {
             const m = currentModel()
@@ -407,6 +461,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     const model = createModel()
+
+    const selection = createSelectionState(
+      createMemo(() => {
+        const currentAgent = agent.current()
+        return selectionSnapshot({
+          sessionID: route.data.type === "session" ? route.data.sessionID : undefined,
+          agent: currentAgent?.name,
+          agents: agent.list(),
+          model: model.forAgent,
+          variant: model.variantFor,
+        })
+      }),
+    )
 
     function createSession() {
       const [sessionStore, setSessionStore] = createStore<{
@@ -535,6 +602,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       agent,
       mcp,
       session,
+      selection,
       permission,
     }
     return result
