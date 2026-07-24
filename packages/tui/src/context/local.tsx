@@ -389,11 +389,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             const a = agent.current()
             if (!a) return
-            if (options?.recent) {
-              for (const ag of agent.list()) {
-                const current = modelFor(ag)
-                if (current) setModelStore("model", ag.name, current)
-              }
+            for (const ag of agent.list()) {
+              const current = modelFor(ag)
+              if (current) setModelStore("model", ag.name, current)
             }
             setModelStore("model", a.name, model)
             if (options?.recent) {
