@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import type { TuiSelection } from "@opencode-ai/plugin/tui"
-import { createRoot, createSignal } from "solid-js"
+import { batch, createRoot, createSignal } from "solid-js"
+import { createStore } from "solid-js/store"
 import {
   createSelectionState,
   parseModel,
@@ -66,7 +67,8 @@ test("pinning current models prevents fallback drift across agents", () => {
   const valid = () => true
   const agents = [{ name: "build" }, { name: "plan" }]
   const startupModel = { providerID: "openai", modelID: "startup" }
-  const pickedPlan = { providerID: "anthropic", modelID: "plan-picked" }
+  const pickedBuild = { providerID: "anthropic", modelID: "build-picked" }
+  const pickedPlan = { providerID: "google", modelID: "plan-picked" }
   const modelStore: Record<string, { providerID: string; modelID: string } | undefined> = {}
   let fallback: { providerID: string; modelID: string } = startupModel
   const snap = (agent?: string) =>
@@ -84,12 +86,82 @@ test("pinning current models prevents fallback drift across agents", () => {
     const current = resolveModel(valid, modelStore[a.name], undefined, fallback)
     if (current) modelStore[a.name] = current
   }
-  // Now pick plan model (simulates model.set + recent update)
+  // Now pick build model (simulates model.set + recent update)
+  modelStore.build = pickedBuild
+  fallback = pickedBuild
+  const afterBuild = snap("build")
+  expect(afterBuild.models.build).toEqual(pickedBuild)
+  expect(afterBuild.models.plan).toEqual(startupModel)
+  // Pick plan model — build must stay on its own override
   modelStore.plan = pickedPlan
   fallback = pickedPlan
-  const after = snap("plan")
-  expect(after.models.build).toEqual(startupModel)
-  expect(after.models.plan).toEqual(pickedPlan)
+  const afterPlan = snap("plan")
+  expect(afterPlan.models.build).toEqual(pickedBuild)
+  expect(afterPlan.models.plan).toEqual(pickedPlan)
+})
+
+test("pinning via Solid store: spread breaks shared proxy so agents stay independent", () => {
+  const run = (spread: boolean) =>
+    createRoot((dispose) => {
+      const [modelStore, setModelStore] = createStore<{
+        model: Record<string, { providerID: string; modelID: string } | undefined>
+        recent: { providerID: string; modelID: string }[]
+      }>({
+        model: {},
+        recent: [{ providerID: "openai", modelID: "startup" }],
+      })
+      const valid = (_m: { providerID: string; modelID: string }) => true
+      const agents = [{ name: "build" }, { name: "plan" }]
+      const modelFor = (a: { name: string }) => {
+        const current = modelStore.model[a.name] ?? modelStore.recent[0]
+        return current && valid(current) ? current : undefined
+      }
+      const recentModels = (
+        m: { providerID: string; modelID: string },
+        r: { providerID: string; modelID: string }[],
+      ) => [m, ...r].filter((x, i, a) => a.findIndex((y) => y.providerID === x.providerID && y.modelID === x.modelID) === i)
+
+      const setRecent = (agent: string, m: { providerID: string; modelID: string }) => {
+        batch(() => {
+          for (const ag of agents) {
+            const current = modelFor(ag)
+            if (current) setModelStore("model", ag.name, spread ? { ...current } : current)
+          }
+          setModelStore("model", agent, m)
+          setModelStore("recent", recentModels(m, modelStore.recent))
+        })
+      }
+
+      setRecent("build", { providerID: "anthropic", modelID: "build-picked" })
+      const afterBuild = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+      setRecent("plan", { providerID: "google", modelID: "plan-picked" })
+      const afterPlan = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+      return { dispose, afterBuild, afterPlan }
+    })
+
+  // Without spread: both agents share the same Solid store node, picking one mutates the other
+  const buggy = run(false)
+  expect(buggy.afterBuild.build).toEqual({ providerID: "anthropic", modelID: "build-picked" })
+  // BUG: plan already drifted to build-picked because the proxy was shared
+  expect(buggy.afterBuild.plan).toEqual({ providerID: "anthropic", modelID: "build-picked" })
+  // BUG: second pick drifts both to plan-picked
+  expect(buggy.afterPlan.build).toEqual({ providerID: "google", modelID: "plan-picked" })
+  expect(buggy.afterPlan.plan).toEqual({ providerID: "google", modelID: "plan-picked" })
+  buggy.dispose()
+
+  // With spread: each agent gets its own plain object copy, no drift
+  const fixed = run(true)
+  expect(fixed.afterBuild.build).toEqual({ providerID: "anthropic", modelID: "build-picked" })
+  expect(fixed.afterBuild.plan).toEqual({ providerID: "openai", modelID: "startup" })
+  expect(fixed.afterPlan.build).toEqual({ providerID: "anthropic", modelID: "build-picked" })
+  expect(fixed.afterPlan.plan).toEqual({ providerID: "google", modelID: "plan-picked" })
+  fixed.dispose()
 })
 
 test("emits structural selection and session changes but suppresses no-ops", async () => {

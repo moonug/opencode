@@ -415,7 +415,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           bindSession()
           for (const ag of agent.list()) {
             const current = modelFor(ag)
-            if (current) setModelStore("model", ag.name, current)
+            if (current) setModelStore("model", ag.name, { ...current })
           }
           setModelStore("model", a.name, { ...next })
           setModelStore("recent", recentModels(next, modelStore.recent))
@@ -450,7 +450,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             if (options?.recent) {
               for (const ag of agent.list()) {
                 const current = modelFor(ag)
-                if (current) setModelStore("model", ag.name, current)
+                if (current) setModelStore("model", ag.name, { ...current })
               }
             }
             setModelStore("model", a.name, model)
