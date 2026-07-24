@@ -1,6 +1,7 @@
 import type {
   TuiDialogSelectOption,
   TuiEventBus,
+  TuiModelSelectedEvent,
   TuiPluginApi,
   TuiSelectionChangedEvent,
   TuiSlotProps,
@@ -170,6 +171,7 @@ function stateApi(sync: ReturnType<typeof useSync>, local: ReturnType<typeof use
     selection() {
       return local.selection.current()
     },
+    modelSelectionEvents: true,
   }
 }
 
@@ -178,6 +180,9 @@ function eventApi(input: Pick<Input, "event" | "local">): TuiEventBus {
     on(type, handler) {
       if (type === "tui.selection.changed") {
         return input.local.selection.subscribe(handler as (event: TuiSelectionChangedEvent) => void)
+      }
+      if (type === "tui.model.selected") {
+        return input.local.selection.subscribeModel(handler as (event: TuiModelSelectedEvent) => void)
       }
       return (input.event.on as TuiEventBus["on"])(type, handler)
     },

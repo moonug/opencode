@@ -149,3 +149,33 @@ test("keeps selection subscribers isolated per instance", async () => {
   expect(secondEvents).toBe(0)
   fixture.dispose()
 })
+
+test("emits explicit model selections separately from selection snapshots", () => {
+  const fixture = createRoot((dispose) => ({
+    dispose,
+    state: createSelectionState(() => ({ models: {} })),
+  }))
+  const events: unknown[] = []
+  fixture.state.subscribeModel((event) => events.push(event))
+
+  fixture.state.modelSelected({
+    type: "tui.model.selected",
+    data: {
+      sessionID: "ses_1",
+      agent: "plan",
+      model: { providerID: "openai", modelID: "gpt-5.6-sol", variant: "high" },
+    },
+  })
+
+  expect(events).toEqual([
+    {
+      type: "tui.model.selected",
+      data: {
+        sessionID: "ses_1",
+        agent: "plan",
+        model: { providerID: "openai", modelID: "gpt-5.6-sol", variant: "high" },
+      },
+    },
+  ])
+  fixture.dispose()
+})

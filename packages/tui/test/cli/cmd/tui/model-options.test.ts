@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { sortModelOptions } from "../../../../src/component/dialog-model"
+import { sortModelOptions, uniqueModelOptions } from "../../../../src/component/dialog-model"
 
 describe("sortModelOptions", () => {
   test("orders provider-scoped model choices by newest release first", () => {
@@ -29,4 +29,14 @@ describe("sortModelOptions", () => {
 
     expect(sorted.map((model) => model.title)).toEqual(["Free new", "Free old", "GLM 5.2", "GLM 5.1", "GLM 5"])
   })
+})
+
+test("model choices contain one row per provider and model", () => {
+  const current = { providerID: "openai", modelID: "gpt-5.6-sol" }
+  const options = uniqueModelOptions([
+    { value: current, title: "GPT-5.6 Sol", category: "Recent" },
+    { value: { ...current }, title: "GPT-5.6 Sol", category: "OpenAI" },
+  ])
+
+  expect(options).toEqual([{ value: current, title: "GPT-5.6 Sol", category: "Recent" }])
 })

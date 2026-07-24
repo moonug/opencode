@@ -118,15 +118,15 @@ export function DialogModel(props: { providerID?: string }) {
 
     if (needle) {
       return [
-        ...sortModelOptions(
+        ...uniqueModelOptions(sortModelOptions(
           fuzzysort.go(needle, providerOptions, { keys: ["title", "category"] }).map((x) => x.obj),
           false,
-        ),
+        )),
         ...fuzzysort.go(needle, popularProviders, { keys: ["title"] }).map((x) => x.obj),
       ]
     }
 
-    return [...favoriteOptions, ...recentOptions, ...providerOptions, ...popularProviders]
+    return [...uniqueModelOptions([...favoriteOptions, ...recentOptions, ...providerOptions]), ...popularProviders]
   })
 
   const provider = createMemo(() =>
@@ -181,6 +181,18 @@ export function DialogModel(props: { providerID?: string }) {
       current={local.model.current()}
     />
   )
+}
+
+export function uniqueModelOptions<
+  T extends { value: { providerID: string; modelID: string } },
+>(options: T[]): T[] {
+  const seen = new Set<string>()
+  return options.filter((option) => {
+    const key = `${option.value.providerID}/${option.value.modelID}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export function sortModelOptions<T extends { footer?: string; releaseDate: string | number; title: string }>(

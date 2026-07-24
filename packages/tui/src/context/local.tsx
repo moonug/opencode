@@ -1,7 +1,12 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { batch, createEffect, createMemo } from "solid-js"
-import type { TuiSelection, TuiSelectionChangedEvent, TuiSelectionModel } from "@opencode-ai/plugin/tui"
+import type {
+  TuiModelSelectedEvent,
+  TuiSelection,
+  TuiSelectionChangedEvent,
+  TuiSelectionModel,
+} from "@opencode-ai/plugin/tui"
 import { useSync } from "./sync"
 import { useEvent } from "./event"
 import path from "path"
@@ -79,6 +84,7 @@ export function selectionSnapshot<Agent extends { name: string }>(input: {
 
 export function createSelectionState(current: () => TuiSelection) {
   const handlers = new Set<(event: TuiSelectionChangedEvent) => void>()
+  const modelHandlers = new Set<(event: TuiModelSelectedEvent) => void>()
   let previous: TuiSelection | undefined
   let key: string | undefined
 
@@ -100,6 +106,13 @@ export function createSelectionState(current: () => TuiSelection) {
     subscribe(handler: (event: TuiSelectionChangedEvent) => void) {
       handlers.add(handler)
       return () => handlers.delete(handler)
+    },
+    subscribeModel(handler: (event: TuiModelSelectedEvent) => void) {
+      modelHandlers.add(handler)
+      return () => modelHandlers.delete(handler)
+    },
+    modelSelected(event: TuiModelSelectedEvent) {
+      for (const handler of modelHandlers) handler(event)
     },
   }
 }
@@ -181,10 +194,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     const agent = createAgent()
+    let selection: ReturnType<typeof createSelectionState>
 
     function createModel() {
       const [modelStore, setModelStore] = createStore<{
         ready: boolean
+        sessionID?: string
         model: Record<
           string,
           {
@@ -203,6 +218,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         variant: Record<string, string | undefined>
       }>({
         ready: false,
+        sessionID: undefined,
         model: {},
         recent: [],
         favorite: [],
@@ -282,7 +298,32 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       })
 
       function modelFor(a: { name: string; model?: { providerID: string; modelID: string } }) {
-        return resolveModel(isModelValid, modelStore.model[a.name], a.model, fallbackModel())
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const override = modelStore.sessionID === sessionID ? modelStore.model[a.name] : undefined
+        return resolveModel(isModelValid, override, a.model, fallbackModel())
+      }
+
+      function bindSession() {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (modelStore.sessionID === sessionID) return
+        batch(() => {
+          setModelStore("sessionID", sessionID)
+          setModelStore("model", {})
+        })
+      }
+
+      function modelSelected(model: TuiSelectionModel) {
+        const current = agent.current()
+        if (!current) return
+        const variant = model.variant ?? variantFor(model)
+        selection?.modelSelected({
+          type: "tui.model.selected",
+          data: {
+            ...(route.data.type === "session" ? { sessionID: route.data.sessionID } : {}),
+            agent: current.name,
+            model: { providerID: model.providerID, modelID: model.modelID, ...(variant ? { variant } : {}) },
+          },
+        })
       }
 
       const currentModel = createMemo(() => {
@@ -341,7 +382,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!val) return
           const a = agent.current()
           if (!a) return
+          bindSession()
           setModelStore("model", a.name, { ...val })
+          modelSelected(val)
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -369,6 +412,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!next) return
           const a = agent.current()
           if (!a) return
+          bindSession()
           for (const ag of agent.list()) {
             const current = modelFor(ag)
             if (current) setModelStore("model", ag.name, current)
@@ -376,6 +420,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setModelStore("model", a.name, { ...next })
           setModelStore("recent", recentModels(next, modelStore.recent))
           save()
+          modelSelected(next)
+        },
+        restore(sessionID: string, models: Record<string, { providerID: string; modelID: string }>) {
+          const names = new Set(agent.list().map((item) => item.name))
+          batch(() => {
+            setModelStore("sessionID", sessionID)
+            setModelStore(
+              "model",
+              Object.fromEntries(
+                Object.entries(models).filter(([name, value]) => names.has(name) && isModelValid(value)),
+              ),
+            )
+          })
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
           batch(() => {
@@ -389,14 +446,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             const a = agent.current()
             if (!a) return
-            for (const ag of agent.list()) {
-              const current = modelFor(ag)
-              if (current) setModelStore("model", ag.name, current)
+            bindSession()
+            if (options?.recent) {
+              for (const ag of agent.list()) {
+                const current = modelFor(ag)
+                if (current) setModelStore("model", ag.name, current)
+              }
             }
             setModelStore("model", a.name, model)
             if (options?.recent) {
               setModelStore("recent", recentModels(model, modelStore.recent))
               save()
+              modelSelected(model)
             }
           })
         },
@@ -445,6 +506,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           set(value: string | undefined) {
             const m = currentModel()
             if (!m) return
+            this.setFor(m, value)
+            modelSelected({ ...m, ...(value ? { variant: value } : {}) })
+          },
+          setFor(m: { providerID: string; modelID: string }, value: string | undefined) {
             const key = `${m.providerID}/${m.modelID}`
             setModelStore("variant", key, value ?? "default")
             save()
@@ -470,7 +535,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const model = createModel()
 
-    const selection = createSelectionState(
+    selection = createSelectionState(
       createMemo(() => {
         const currentAgent = agent.current()
         return selectionSnapshot({
@@ -482,6 +547,44 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
       }),
     )
+
+    let syncedSessionID: string | undefined
+    let syncedModels: string | undefined
+    createEffect(() => {
+      if (route.data.type !== "session") {
+        syncedSessionID = undefined
+        syncedModels = undefined
+        return
+      }
+      const sessionID = route.data.sessionID
+      if (sessionID !== syncedSessionID) {
+        syncedSessionID = sessionID
+        syncedModels = undefined
+        model.restore(sessionID, {})
+      }
+      const messages = sync.data.message[sessionID]
+      if (!messages) return
+
+      const primaryAgents = agent.list()
+      const restored = Object.fromEntries(
+        primaryAgents.flatMap((item) => {
+          const message = messages.findLast((candidate) => candidate.role === "user" && candidate.agent === item.name)
+          return message?.role === "user" && message.model ? [[item.name, message.model] as const] : []
+        }),
+      )
+      const fingerprint = JSON.stringify(restored)
+      if (fingerprint === syncedModels) return
+      syncedModels = fingerprint
+      model.restore(sessionID, restored)
+
+      const message = messages.findLast((candidate) => candidate.role === "user")
+      if (!message || message.role !== "user") return
+      if (!args.agent && primaryAgents.some((item) => item.name === message.agent)) agent.set(message.agent)
+      const active = args.agent
+        ? messages.findLast((candidate) => candidate.role === "user" && candidate.agent === args.agent)
+        : message
+      if (active?.role === "user" && active.model) model.variant.setFor(active.model, active.model.variant)
+    })
 
     function createSession() {
       const [sessionStore, setSessionStore] = createStore<{

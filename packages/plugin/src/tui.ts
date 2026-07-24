@@ -397,6 +397,7 @@ export type TuiState = {
   lsp: () => ReadonlyArray<TuiSidebarLspItem>
   mcp: () => ReadonlyArray<TuiSidebarMcpItem>
   selection: () => TuiSelection
+  modelSelectionEvents?: true
 }
 
 export type TuiSelectionModel = {
@@ -416,6 +417,15 @@ export type TuiSelectionChangedEvent = {
   data: {
     previous?: TuiSelection
     current: TuiSelection
+  }
+}
+
+export type TuiModelSelectedEvent = {
+  type: "tui.model.selected"
+  data: {
+    sessionID?: string
+    agent: string
+    model: TuiSelectionModel
   }
 }
 
@@ -538,9 +548,9 @@ export type TuiSlots = {
 }
 
 export type TuiEventBus = {
-  on: <Type extends (Event | TuiSelectionChangedEvent)["type"]>(
+  on: <Type extends (Event | TuiSelectionChangedEvent | TuiModelSelectedEvent)["type"]>(
     type: Type,
-    handler: (event: Extract<Event | TuiSelectionChangedEvent, { type: Type }>) => void,
+    handler: (event: Extract<Event | TuiSelectionChangedEvent | TuiModelSelectedEvent, { type: Type }>) => void,
   ) => () => void
 }
 
