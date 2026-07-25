@@ -550,16 +550,22 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     let syncedSessionID: string | undefined
     let syncedModels: string | undefined
+    // F1 guard: agent.set from message history runs at most once per
+    // session. After that, the user's manual choice (or plan↔build flow)
+    // must win over any later message sync that touches the same session.
+    let agentRestoredFor: string | undefined
     createEffect(() => {
       if (route.data.type !== "session") {
         syncedSessionID = undefined
         syncedModels = undefined
+        agentRestoredFor = undefined
         return
       }
       const sessionID = route.data.sessionID
       if (sessionID !== syncedSessionID) {
         syncedSessionID = sessionID
         syncedModels = undefined
+        agentRestoredFor = undefined
         model.restore(sessionID, {})
       }
       const messages = sync.data.message[sessionID]
@@ -579,7 +585,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const message = messages.findLast((candidate) => candidate.role === "user")
       if (!message || message.role !== "user") return
-      if (!args.agent && primaryAgents.some((item) => item.name === message.agent)) agent.set(message.agent)
+      if (
+        agentRestoredFor !== sessionID &&
+        !args.agent &&
+        primaryAgents.some((item) => item.name === message.agent)
+      ) {
+        agent.set(message.agent)
+        agentRestoredFor = sessionID
+      }
       const active = args.agent
         ? messages.findLast((candidate) => candidate.role === "user" && candidate.agent === args.agent)
         : message
