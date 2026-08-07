@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
+import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -1161,6 +1162,7 @@ const layer = Layer.effect(
           if (
             lastFinished &&
             lastFinished.summary !== true &&
+            minMessagesSatisfied({ cfg: yield* config.get(), model: lastUser.model, msgs }) &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
             yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
@@ -1318,13 +1320,15 @@ const layer = Layer.effect(
 
             if (result === "stop") return "break" as const
             if (result === "compact") {
-              yield* compaction.create({
-                sessionID,
-                agent: lastUser.agent,
-                model: lastUser.model,
-                auto: true,
-                overflow: !handle.message.finish,
-              })
+              if (minMessagesSatisfied({ cfg: yield* config.get(), model: lastUser.model, msgs })) {
+                yield* compaction.create({
+                  sessionID,
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                  auto: true,
+                  overflow: !handle.message.finish,
+                })
+              }
             }
             return "continue" as const
           }).pipe(
@@ -1629,3 +1633,17 @@ export const node = LayerNode.make({
 })
 
 export * as SessionPrompt from "./prompt"
+
+function minMessagesSatisfied(input: {
+  cfg: ConfigV1.Info
+  model: { providerID: string; modelID: string }
+  msgs: SessionV1.WithParts[]
+}) {
+  const modelKey = `${input.model.providerID}/${input.model.modelID}`
+  const min = input.cfg.compaction?.models?.[modelKey]?.min_messages ?? input.cfg.compaction?.min_messages ?? 5
+  const lastSummaryIndex = input.msgs.findLastIndex(
+    (m) => m.info.role === "assistant" && m.info.summary === true && m.info.finish && !m.info.error,
+  )
+  const since = lastSummaryIndex === -1 ? Infinity : input.msgs.length - 1 - lastSummaryIndex
+  return since > min
+}

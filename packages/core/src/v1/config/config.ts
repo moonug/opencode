@@ -164,6 +164,32 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      token_threshold: Schema.optional(PositiveInt).annotate({
+        description: "Trigger compaction when total token count exceeds this absolute number",
+      }),
+      context_threshold: Schema.optional(
+        Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1)),
+      ).annotate({
+        description:
+          "Trigger compaction when token usage exceeds this fraction of the model context window (e.g. 0.5 = 50%)",
+      }),
+      min_messages: Schema.optional(NonNegativeInt).annotate({
+        description: "Minimum number of messages to wait before next compaction (default: 5)",
+      }),
+      models: Schema.optional(
+        Schema.Record(
+          Schema.String,
+          Schema.Struct({
+            token_threshold: Schema.optional(PositiveInt),
+            context_threshold: Schema.optional(
+              Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1)),
+            ),
+            min_messages: Schema.optional(NonNegativeInt),
+          }),
+        ),
+      ).annotate({
+        description: "Model-specific compaction thresholds (key: provider/model)",
+      }),
     }),
   ),
   experimental: Schema.optional(

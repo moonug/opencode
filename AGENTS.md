@@ -148,6 +148,12 @@ const table = sqliteTable("session", {
 
 - Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
 
+## Building
+
+- Local builds inherit `OPENCODE_VERSION` from the environment. Without it, `packages/script/src/index.ts` derives `0.0.0-${branch}-${timestamp}` for non-`latest` branches — a dev-preview marker, not a real version. Do not run `bun run build` from `packages/opencode` without setting `OPENCODE_VERSION=<expected>` (e.g. `1.18.4+moonug.selection.10`).
+- The dev TUI (`bin/.opencode` → `dist/opencode-darwin-arm64/bin/opencode`) inherits whatever version the last build stamped. A dev-preview build (`0.0.0-...`) overwrites the user-facing binary and breaks `--version` reporting. Treat the symlink as production unless `OPENCODE_VERSION` is set.
+- Pass `--skip-install --single` for local darwin-arm64 builds; full cross-platform `bun run build` needs linux/win native deps that aren't available locally.
+
 ## V2 Session Core
 
 - Keep durable prompt admission separate from model execution. `SessionV2.prompt(...)` admits one durable `session_input` row before scheduling advisory `SessionExecution.wake(sessionID)` unless `resume: false` requests admit-only behavior. The serialized runner promotes admitted inputs into visible user messages at safe boundaries.

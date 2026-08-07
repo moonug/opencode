@@ -30,5 +30,13 @@ export function isOverflow(input: {
 
   const count =
     input.tokens.total || input.tokens.input + input.tokens.output + input.tokens.cache.read + input.tokens.cache.write
+
+  const modelKey = `${input.model.providerID}/${input.model.id}`
+  const modelCfg = input.cfg.compaction?.models?.[modelKey]
+  const tokenThreshold = modelCfg?.token_threshold ?? input.cfg.compaction?.token_threshold
+  if (tokenThreshold && count > tokenThreshold) return true
+  const contextThreshold = modelCfg?.context_threshold ?? input.cfg.compaction?.context_threshold
+  if (contextThreshold && count > input.model.limit.context * contextThreshold) return true
+
   return count >= usable(input)
 }
