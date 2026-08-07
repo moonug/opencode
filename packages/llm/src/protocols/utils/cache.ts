@@ -9,8 +9,11 @@ export interface Breakpoints {
 
 export const newBreakpoints = (cap: number): Breakpoints => ({ remaining: cap, dropped: 0 })
 
-// Returns `"1h"` for any `ttlSeconds >= 3600`, otherwise `undefined` (the
-// provider default 5m). Anthropic & Bedrock both treat anything shorter than
-// an hour as 5m.
-export const ttlBucket = (ttlSeconds: number | undefined): "1h" | undefined =>
-  ttlSeconds !== undefined && ttlSeconds >= 3600 ? "1h" : undefined
+// Returns the Anthropic/Bedrock cache TTL bucket for a caller-provided
+// `ttlSeconds`. Default is `"1h"`; an explicit value below one hour falls
+// back to `"5m"`. Anthropic & Bedrock both treat anything shorter than an
+// hour as 5m.
+export const ttlBucket = (ttlSeconds: number | undefined): "1h" | "5m" => {
+  if (ttlSeconds !== undefined && ttlSeconds < 3600) return "5m"
+  return "1h"
+}

@@ -437,15 +437,15 @@ describe("Bedrock Converse route", () => {
 
       expect(prepared.body).toMatchObject({
         // System: text block followed by cachePoint marker.
-        system: [{ text: "System prefix." }, { cachePoint: { type: "default" } }],
+        system: [{ text: "System prefix." }, { cachePoint: { type: "default", ttl: "1h" } }],
         messages: [
           {
             role: "user",
-            content: [{ text: "User prefix." }, { cachePoint: { type: "default" } }],
+            content: [{ text: "User prefix." }, { cachePoint: { type: "default", ttl: "1h" } }],
           },
           {
             role: "assistant",
-            content: [{ text: "Assistant prefix." }, { cachePoint: { type: "default" } }],
+            content: [{ text: "Assistant prefix." }, { cachePoint: { type: "default", ttl: "1h" } }],
           },
         ],
       })
@@ -615,14 +615,14 @@ describe("Bedrock Converse route", () => {
 
       expect(prepared.body).toMatchObject({
         toolConfig: {
-          tools: [{ toolSpec: { name: "lookup" } }, { cachePoint: { type: "default" } }],
+          tools: [{ toolSpec: { name: "lookup" } }, { cachePoint: { type: "default", ttl: "1h" } }],
         },
         messages: [
           { role: "user", content: [{ text: "What's the weather?" }] },
           { role: "assistant", content: [{ toolUse: { toolUseId: "call_1" } }] },
           {
             role: "user",
-            content: [{ toolResult: { toolUseId: "call_1" } }, { cachePoint: { type: "default" } }],
+            content: [{ toolResult: { toolUseId: "call_1" } }, { cachePoint: { type: "default", ttl: "1h" } }],
           },
         ],
       })

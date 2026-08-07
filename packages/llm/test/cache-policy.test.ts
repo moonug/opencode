@@ -40,10 +40,15 @@ describe("applyCachePolicy", () => {
       )
 
       // No explicit cache field → auto policy fires → last system part + latest
-      // user message both get cache_control markers.
+      // user message both get cache_control markers, defaulting to 1h.
       expect(prepared.body).toMatchObject({
-        system: [{ type: "text", text: "You are concise.", cache_control: { type: "ephemeral" } }],
-        messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] }],
+        system: [{ type: "text", text: "You are concise.", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral", ttl: "1h" } }],
+          },
+        ],
       })
     }),
   )
@@ -65,14 +70,14 @@ describe("applyCachePolicy", () => {
       )
 
       expect(prepared.body).toMatchObject({
-        tools: [{ name: "t1", cache_control: { type: "ephemeral" } }],
-        system: [{ type: "text", text: "Sys A", cache_control: { type: "ephemeral" } }],
+        tools: [{ name: "t1", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        system: [{ type: "text", text: "Sys A", cache_control: { type: "ephemeral", ttl: "1h" } }],
         messages: [
           { role: "user", content: [{ type: "text", text: "first user" }] },
           { role: "assistant", content: [{ type: "text", text: "assistant reply" }] },
           {
             role: "user",
-            content: [{ type: "text", text: "latest user message", cache_control: { type: "ephemeral" } }],
+            content: [{ type: "text", text: "latest user message", cache_control: { type: "ephemeral", ttl: "1h" } }],
           },
         ],
       })
@@ -129,13 +134,13 @@ describe("applyCachePolicy", () => {
 
       expect(prepared.body).toMatchObject({
         toolConfig: {
-          tools: [{ toolSpec: { name: "t1" } }, { cachePoint: { type: "default" } }],
+          tools: [{ toolSpec: { name: "t1" } }, { cachePoint: { type: "default", ttl: "1h" } }],
         },
-        system: [{ text: "Sys" }, { cachePoint: { type: "default" } }],
+        system: [{ text: "Sys" }, { cachePoint: { type: "default", ttl: "1h" } }],
         messages: [
           { role: "user", content: [{ text: "first user" }] },
           { role: "assistant", content: [{ text: "reply" }] },
-          { role: "user", content: [{ text: "latest user" }, { cachePoint: { type: "default" } }] },
+          { role: "user", content: [{ text: "latest user" }, { cachePoint: { type: "default", ttl: "1h" } }] },
         ],
       })
     }),
@@ -173,7 +178,7 @@ describe("applyCachePolicy", () => {
       )
 
       expect(prepared.body).toMatchObject({
-        tools: [{ name: "t1", cache_control: { type: "ephemeral" } }],
+        tools: [{ name: "t1", cache_control: { type: "ephemeral", ttl: "1h" } }],
         system: [{ type: "text", text: "Sys", cache_control: undefined }],
       })
     }),
@@ -195,7 +200,7 @@ describe("applyCachePolicy", () => {
 
       const body = prepared.body as { system: Array<{ text: string; cache_control?: unknown }> }
       expect(body.system[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
-      expect(body.system[1]?.cache_control).toEqual({ type: "ephemeral" })
+      expect(body.system[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
     }),
   )
 
@@ -216,6 +221,25 @@ describe("applyCachePolicy", () => {
     }),
   )
 
+  it.effect("explicit ttlSeconds < 3600 falls back to 5m", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model: anthropicModel,
+          system: "Sys",
+          prompt: "hi",
+          cache: { system: true, ttlSeconds: 300 },
+        }),
+      )
+
+      // Anthropic's 5m default is signaled by omitting the `ttl` field
+      // entirely; the provider picks 5m as the implicit default.
+      expect(prepared.body).toMatchObject({
+        system: [{ type: "text", text: "Sys", cache_control: { type: "ephemeral" } }],
+      })
+    }),
+  )
+
   it.effect("messages: { tail: 2 } marks the last 2 message boundaries", () =>
     Effect.gen(function* () {
       const prepared = yield* LLMClient.prepare(
@@ -229,8 +253,8 @@ describe("applyCachePolicy", () => {
       const body = prepared.body as { messages: Array<{ content: Array<{ cache_control?: unknown }> }> }
       expect(body.messages[0]?.content[0]?.cache_control).toBeUndefined()
       expect(body.messages[1]?.content[0]?.cache_control).toBeUndefined()
-      expect(body.messages[2]?.content[0]?.cache_control).toEqual({ type: "ephemeral" })
-      expect(body.messages[3]?.content[0]?.cache_control).toEqual({ type: "ephemeral" })
+      expect(body.messages[2]?.content[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
+      expect(body.messages[3]?.content[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
     }),
   )
 
@@ -246,7 +270,7 @@ describe("applyCachePolicy", () => {
 
       const body = prepared.body as { messages: Array<{ content: Array<{ cache_control?: unknown }> }> }
       expect(body.messages[0]?.content[0]?.cache_control).toBeUndefined()
-      expect(body.messages[1]?.content[0]?.cache_control).toEqual({ type: "ephemeral" })
+      expect(body.messages[1]?.content[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
       expect(body.messages[2]?.content[0]?.cache_control).toBeUndefined()
     }),
   )

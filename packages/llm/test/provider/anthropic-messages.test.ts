@@ -48,7 +48,7 @@ describe("Anthropic Messages route", () => {
 
       expect(prepared.body).toEqual({
         model: "claude-sonnet-4-5",
-        system: [{ type: "text", text: "You are concise.", cache_control: { type: "ephemeral" } }],
+        system: [{ type: "text", text: "You are concise.", cache_control: { type: "ephemeral", ttl: "1h" } }],
         messages: [{ role: "user", content: [{ type: "text", text: "Say hello." }] }],
         stream: true,
         max_tokens: 20,
@@ -75,7 +75,7 @@ describe("Anthropic Messages route", () => {
         { role: "user", content: [{ type: "text", text: "Before." }] },
         {
           role: "system",
-          content: [{ type: "text", text: "Operator update.", cache_control: { type: "ephemeral" } }],
+          content: [{ type: "text", text: "Operator update.", cache_control: { type: "ephemeral", ttl: "1h" } }],
         },
         { role: "assistant", content: [{ type: "text", text: "After." }] },
       ])
@@ -806,13 +806,15 @@ describe("Anthropic Messages route", () => {
       )
 
       expect(prepared.body).toMatchObject({
-        tools: [{ name: "lookup", cache_control: { type: "ephemeral" } }],
+        tools: [{ name: "lookup", cache_control: { type: "ephemeral", ttl: "1h" } }],
         messages: [
           { role: "user", content: [{ type: "text", text: "What's the weather?" }] },
           { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "lookup" }] },
           {
             role: "user",
-            content: [{ type: "tool_result", tool_use_id: "call_1", cache_control: { type: "ephemeral" } }],
+            content: [
+              { type: "tool_result", tool_use_id: "call_1", cache_control: { type: "ephemeral", ttl: "1h" } },
+            ],
           },
         ],
       })
