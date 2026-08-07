@@ -66,13 +66,13 @@ export function selectionSnapshot<Agent extends { name: string }>(input: {
   agent?: string
   agents: ReadonlyArray<Agent>
   model: (agent: Agent) => { providerID: string; modelID: string } | undefined
-  variant: (model: { providerID: string; modelID: string }) => string | undefined
+  variant: (agentName: string, model: { providerID: string; modelID: string }) => string | undefined
 }): TuiSelection {
   const models: Record<string, TuiSelectionModel> = {}
   for (const agent of input.agents.toSorted((a, b) => a.name.localeCompare(b.name))) {
     const model = input.model(agent)
     if (!model) continue
-    const variant = input.variant(model)
+    const variant = input.variant(agent.name, model)
     models[agent.name] = { ...model, ...(variant ? { variant } : {}) }
   }
   return {
@@ -315,7 +315,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       function modelSelected(model: TuiSelectionModel) {
         const current = agent.current()
         if (!current) return
-        const variant = model.variant ?? variantFor(model)
+        const variant = model.variant ?? variantFor(current.name, model)
         selection?.modelSelected({
           type: "tui.model.selected",
           data: {
@@ -331,8 +331,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return a ? modelFor(a) : undefined
       })
 
-      function variantFor(m: { providerID: string; modelID: string }) {
-        const value = modelStore.variant[`${m.providerID}/${m.modelID}`]
+      function variantFor(agentName: string, m: { providerID: string; modelID: string }) {
+        const agentKey = `${agentName}/${m.providerID}/${m.modelID}`
+        const legacyKey = `${m.providerID}/${m.modelID}`
+        const value = modelStore.variant[agentKey] ?? modelStore.variant[legacyKey]
         if (!value) return
         const provider = sync.data.provider.find((item) => item.id === m.providerID)
         const variants = provider?.models[m.modelID]?.variants
@@ -426,12 +428,22 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const names = new Set(agent.list().map((item) => item.name))
           batch(() => {
             setModelStore("sessionID", sessionID)
-            setModelStore(
-              "model",
-              Object.fromEntries(
-                Object.entries(models).filter(([name, value]) => names.has(name) && isModelValid(value)),
-              ),
-            )
+            if (Object.keys(models).length === 0) {
+              // Explicit reset (session switch) — clear all overrides.
+              // setStore("model", {}) does NOT remove existing nested keys,
+              // so clear each known agent explicitly.
+              for (const name of names) setModelStore("model", name, undefined as never)
+              return
+            }
+            // Merge, don't replace: only update agents with a matching
+            // message. A full replace wipes agents whose last message was
+            // pruned by compaction, causing them to fall back to a recent
+            // (possibly other agent's) model.
+            for (const [name, value] of Object.entries(models)) {
+              if (names.has(name) && isModelValid(value)) {
+                setModelStore("model", name, { ...value })
+              }
+            }
           })
         },
         set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
@@ -486,14 +498,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         },
         variant: {
           selected() {
+            const a = agent.current()
             const m = currentModel()
-            if (!m) return undefined
-            const key = `${m.providerID}/${m.modelID}`
-            return modelStore.variant[key]
+            if (!a || !m) return undefined
+            const agentKey = `${a.name}/${m.providerID}/${m.modelID}`
+            const legacyKey = `${m.providerID}/${m.modelID}`
+            return modelStore.variant[agentKey] ?? modelStore.variant[legacyKey]
           },
           current() {
+            const a = agent.current()
             const m = currentModel()
-            return m ? variantFor(m) : undefined
+            return a && m ? variantFor(a.name, m) : undefined
           },
           list() {
             const m = currentModel()
@@ -504,13 +519,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return Object.keys(info.variants)
           },
           set(value: string | undefined) {
+            const a = agent.current()
             const m = currentModel()
-            if (!m) return
-            this.setFor(m, value)
+            if (!a || !m) return
+            this.setFor(a.name, m, value)
             modelSelected({ ...m, ...(value ? { variant: value } : {}) })
           },
-          setFor(m: { providerID: string; modelID: string }, value: string | undefined) {
-            const key = `${m.providerID}/${m.modelID}`
+          setFor(agentName: string, m: { providerID: string; modelID: string }, value: string | undefined) {
+            const key = `${agentName}/${m.providerID}/${m.modelID}`
             setModelStore("variant", key, value ?? "default")
             save()
           },
@@ -563,10 +579,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
       const sessionID = route.data.sessionID
       if (sessionID !== syncedSessionID) {
+        const wasHome = syncedSessionID === undefined
         syncedSessionID = sessionID
         syncedModels = undefined
         agentRestoredFor = undefined
-        model.restore(sessionID, {})
+        // Preserve model overrides picked on the home screen when the user
+        // sends the first message (home → session). Only clear when
+        // switching between existing sessions to avoid leaking models.
+        if (!wasHome) model.restore(sessionID, {})
       }
       const messages = sync.data.message[sessionID]
       if (!messages) return
@@ -596,7 +616,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const active = args.agent
         ? messages.findLast((candidate) => candidate.role === "user" && candidate.agent === args.agent)
         : message
-      if (active?.role === "user" && active.model) model.variant.setFor(active.model, active.model.variant)
+      if (active?.role === "user" && active.model) {
+        const variantAgent = active.agent ?? agent.current()?.name
+        if (variantAgent) model.variant.setFor(variantAgent, active.model, active.model.variant)
+      }
     })
 
     function createSession() {

@@ -51,7 +51,7 @@ test("snapshots effective models for every primary visible agent", () => {
           configured[agent.name as keyof typeof configured],
           fallback,
         ),
-      variant: (model) => (model.modelID === "gpt-5" ? "high" : undefined),
+      variant: (_agentName, model) => (model.modelID === "gpt-5" ? "high" : undefined),
     }),
   ).toEqual({
     agent: "build",
@@ -61,6 +61,38 @@ test("snapshots effective models for every primary visible agent", () => {
       plan: { providerID: "anthropic", modelID: "claude" },
     },
   })
+})
+
+test("variant (effort) is per-agent: same model, independent variants", () => {
+  const sameModel = { providerID: "zai", modelID: "glm-5.2" }
+  const variantStore: Record<string, string | undefined> = {
+    "plan/zai/glm-5.2": "high",
+    "build/zai/glm-5.2": "low",
+  }
+  const result = selectionSnapshot({
+    agents: [{ name: "build" }, { name: "plan" }],
+    model: () => sameModel,
+    variant: (agentName, m) => variantStore[`${agentName}/${m.providerID}/${m.modelID}`],
+  })
+  expect(result.models.plan).toEqual({ ...sameModel, variant: "high" })
+  expect(result.models.build).toEqual({ ...sameModel, variant: "low" })
+  expect(result.models.plan?.variant).not.toBe(result.models.build?.variant)
+})
+
+test("variant falls back to legacy per-model key when per-agent key absent", () => {
+  const sameModel = { providerID: "zai", modelID: "glm-5.2" }
+  const variantStore: Record<string, string | undefined> = {
+    "zai/glm-5.2": "high",
+  }
+  const result = selectionSnapshot({
+    agents: [{ name: "build" }, { name: "plan" }],
+    model: () => sameModel,
+    variant: (agentName, m) =>
+      variantStore[`${agentName}/${m.providerID}/${m.modelID}`] ??
+      variantStore[`${m.providerID}/${m.modelID}`],
+  })
+  expect(result.models.plan).toEqual({ ...sameModel, variant: "high" })
+  expect(result.models.build).toEqual({ ...sameModel, variant: "high" })
 })
 
 test("pinning current models prevents fallback drift across agents", () => {
@@ -162,6 +194,122 @@ test("pinning via Solid store: spread breaks shared proxy so agents stay indepen
   expect(fixed.afterPlan.build).toEqual({ providerID: "anthropic", modelID: "build-picked" })
   expect(fixed.afterPlan.plan).toEqual({ providerID: "google", modelID: "plan-picked" })
   fixed.dispose()
+})
+
+test("model.restore merges partial restore, only resets on empty", () => {
+  const run = () =>
+    createRoot((dispose) => {
+      const [modelStore, setModelStore] = createStore<{
+        model: Record<string, { providerID: string; modelID: string } | undefined>
+      }>({ model: {} })
+      const valid = (_m: { providerID: string; modelID: string }) => true
+      // Mirrors model.restore in local.tsx: empty map = explicit reset
+      // (session switch), non-empty = merge per-agent overrides.
+      const restore = (models: Record<string, { providerID: string; modelID: string }>) => {
+        const entries = Object.entries(models)
+        if (entries.length === 0) {
+          // setStore("model", {}) does NOT remove existing nested keys,
+          // so clear each known agent explicitly (mirrors local.tsx).
+          for (const name of ["build", "plan"]) setModelStore("model", name, undefined)
+          return
+        }
+        for (const [name, value] of entries) {
+          if (valid(value)) setModelStore("model", name, { ...value })
+        }
+      }
+
+      // Build's model pinned before compaction.
+      restore({ build: { providerID: "opencode-go", modelID: "deepseek-v4-flash" } })
+      const beforeCompaction = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+
+      // After compaction, plan's last message remains, build's was pruned.
+      // Partial restore must NOT wipe build's override.
+      restore({ plan: { providerID: "minimax-coding-plan", modelID: "MiniMax-M3" } })
+      const afterPartial = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+
+      // Session switch: empty restore must clear everything.
+      restore({})
+      const afterReset = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+      return { dispose, beforeCompaction, afterPartial, afterReset }
+    })
+
+  const fixture = run()
+  expect(fixture.beforeCompaction.build).toEqual({ providerID: "opencode-go", modelID: "deepseek-v4-flash" })
+  expect(fixture.beforeCompaction.plan).toBeUndefined()
+  // Regression: partial restore keeps build override (compaction pruned build msg)
+  expect(fixture.afterPartial.build).toEqual({ providerID: "opencode-go", modelID: "deepseek-v4-flash" })
+  expect(fixture.afterPartial.plan).toEqual({ providerID: "minimax-coding-plan", modelID: "MiniMax-M3" })
+  // Empty restore (session switch) still resets
+  expect(fixture.afterReset.build).toBeUndefined()
+  expect(fixture.afterReset.plan).toBeUndefined()
+  fixture.dispose()
+})
+
+test("home→session transition skips model restore to preserve home picks", () => {
+  // Mirrors local.tsx sync effect: home has syncedSessionID===undefined.
+  // When the first session opens, restore must NOT be called, so models
+  // pinned on the home screen survive. Switching session→session still resets.
+  const run = () =>
+    createRoot((dispose) => {
+      const [modelStore, setModelStore] = createStore<{
+        model: Record<string, { providerID: string; modelID: string } | undefined>
+      }>({ model: {} })
+      const pinned: string[] = []
+      const modelFor = (name: string) => (modelStore.model[name] ? { ...modelStore.model[name]! } : undefined)
+      // Simulate model.set with { recent: true } pinning all agents on home.
+      const pinAll = () => {
+        for (const name of ["build", "plan"]) {
+          const current = modelFor(name)
+          if (current) setModelStore("model", name, { ...current })
+        }
+      }
+      // Mirrors sync-effect transition: only restore on session→session.
+      const transition = (prev: string | undefined, next: string | undefined) => {
+        if (next !== prev) {
+          if (prev !== undefined) {
+            pinned.push("restore")
+            for (const name of ["build", "plan"]) setModelStore("model", name, undefined)
+          }
+        }
+      }
+
+      // Home: build pinned to deepseek.
+      setModelStore("model", "build", { providerID: "opencode-go", modelID: "deepseek-v4-flash" })
+      pinAll()
+
+      // Home → first session (prev undefined): must NOT clear.
+      transition(undefined, "ses_first")
+      const afterFirstSession = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+
+      // Session → session: must clear.
+      transition("ses_first", "ses_second")
+      const afterSwitch = {
+        build: modelStore.model.build ? { ...modelStore.model.build } : undefined,
+        plan: modelStore.model.plan ? { ...modelStore.model.plan } : undefined,
+      }
+      return { dispose, pinned, afterFirstSession, afterSwitch }
+    })
+
+  const fixture = run()
+  // Home picks survive the first-session transition (no restore called).
+  expect(fixture.afterFirstSession.build).toEqual({ providerID: "opencode-go", modelID: "deepseek-v4-flash" })
+  // Session switch still clears.
+  expect(fixture.pinned).toEqual(["restore"])
+  expect(fixture.afterSwitch.build).toBeUndefined()
+  expect(fixture.afterSwitch.plan).toBeUndefined()
+  fixture.dispose()
 })
 
 test("emits structural selection and session changes but suppresses no-ops", async () => {
