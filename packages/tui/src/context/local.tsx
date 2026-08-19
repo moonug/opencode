@@ -19,6 +19,7 @@ import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 import { usePermission } from "./permission"
+import { applyModelRestore, type RestoreSink } from "../util/model-restore"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -255,48 +256,28 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
       }
 
+      const restoreSink: RestoreSink = {
+        isUnbound: () => modelStore.sessionID === undefined,
+        getCurrentModels: () => modelStore.model as Record<string, { providerID: string; modelID: string }>,
+        getHomeAgents: () => homeAgents,
+        setModel: (agent, model) => setModelStore("model", agent, model),
+        setHomeAgent: (agent, model) => {
+          homeAgents[agent] = model
+        },
+        setRecent: (recent) => setModelStore("recent", recent),
+        setFavorite: (favorite) => setModelStore("favorite", favorite),
+        setVariant: (variant) => setModelStore("variant", variant),
+      }
+
       readJson<unknown>(filePath)
         .then((x) => {
-          if (!x || typeof x !== "object") return
-          const value = x as Record<string, unknown>
-          if (Array.isArray(value.recent)) setModelStore("recent", value.recent)
-          if (Array.isArray(value.favorite)) setModelStore("favorite", value.favorite)
-          if (typeof value.variant === "object" && value.variant !== null)
-            setModelStore("variant", value.variant as Record<string, string | undefined>)
-          if (typeof value.agents === "object" && value.agents !== null) {
-            const persisted: Record<string, { providerID: string; modelID: string }> = {}
-            for (const [agent, entry] of Object.entries(value.agents as Record<string, unknown>)) {
-              if (
-                entry &&
-                typeof entry === "object" &&
-                typeof (entry as Record<string, unknown>).providerID === "string" &&
-                typeof (entry as Record<string, unknown>).modelID === "string"
-              ) {
-                persisted[agent] = {
-                  providerID: (entry as Record<string, unknown>).providerID as string,
-                  modelID: (entry as Record<string, unknown>).modelID as string,
-                }
-              }
-            }
-            const unbound = modelStore.sessionID === undefined
-            for (const [agent, model] of Object.entries(persisted)) {
-              if (unbound && !modelStore.model[agent]) {
-                // Home/draft scope: seed the live overrides. The homeAgents
-                // effect snapshots them into the draft on its next run.
-                setModelStore("model", agent, model)
-              } else if (!unbound && !homeAgents[agent]) {
-                // A session is already bound (e.g. --continue into an
-                // existing session): writing into the store here would
-                // contaminate the session scope AFTER bindExistingSession
-                // cleared it and history restore seeded the session's own
-                // models. Restore into the frozen draft only, so the next
-                // home/new session still inherits it.
-                homeAgents[agent] = model
-              }
-            }
-          }
+          applyModelRestore(x, restoreSink)
         })
-        .catch(() => {})
+        .catch((err: unknown) => {
+          console.error(
+            `local: model.json restore failed path=${filePath}: ${(err as Error)?.message ?? String(err)}`
+          )
+        })
         .finally(() => {
           setModelStore("ready", true)
           if (state.pending) save()
