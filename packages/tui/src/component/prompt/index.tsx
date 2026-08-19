@@ -997,6 +997,10 @@ export function Prompt(props: PromptProps) {
       }
 
       sessionID = res.data.id
+      // Bind the new session to the home/draft scope: the per-agent picks
+      // made before a session existed (incl. the active build agent's pinned
+      // model) transfer unchanged into the new session.
+      local.model.attachNewSession(sessionID)
     }
 
     const inputText = expandTrackedPastedText(

@@ -1595,9 +1595,12 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     // OpenRouter encrypts some reasoning blocks; drop the placeholder.
     return props.part.text.replace("[REDACTED]", "").trim()
   })
-  // Reasoning is finalized when the server sets `time.end` (see processor.ts).
-  // Flips independently of the parent message completing.
-  const isDone = createMemo(() => props.part.time.end !== undefined)
+  // Reasoning is finalized when the server sets `time.end` (see processor.ts),
+  // or when the parent message itself finished — e.g. an aborted turn never
+  // emits `reasoning-end`, so the part's `time.end` stays unset forever.
+  const isDone = createMemo(
+    () => props.part.time.end !== undefined || props.message.time.completed !== undefined || props.message.error !== undefined,
+  )
   const inMinimal = createMemo(() => ctx.thinkingMode() === "hide")
   const duration = createMemo(() => {
     const end = props.part.time.end
@@ -1634,7 +1637,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             <code
               filetype="markdown"
               drawUnstyledText={false}
-              streaming={true}
+              streaming={!isDone()}
               syntaxStyle={syntax()}
               content={summary().body}
               conceal={ctx.conceal()}

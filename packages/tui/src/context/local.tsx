@@ -230,6 +230,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         pending: false,
       }
 
+      // Snapshot of the home/draft per-agent overrides. Mirrors
+      // modelStore.model while sessionID is undefined (i.e. on home) and
+      // freezes on attachNewSession, so in-session model changes never leak
+      // into the persisted draft. Restored at startup via model.json so
+      // new sessions start with the user's last per-agent picks — no
+      // cross-agent fallback leaks.
+      let homeAgents: Record<
+        string,
+        { providerID: string; modelID: string }
+      > = {}
+
       function save() {
         if (!modelStore.ready) {
           state.pending = true
@@ -240,6 +251,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           recent: modelStore.recent,
           favorite: modelStore.favorite,
           variant: modelStore.variant,
+          agents: homeAgents,
         })
       }
 
@@ -251,6 +263,38 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (Array.isArray(value.favorite)) setModelStore("favorite", value.favorite)
           if (typeof value.variant === "object" && value.variant !== null)
             setModelStore("variant", value.variant as Record<string, string | undefined>)
+          if (typeof value.agents === "object" && value.agents !== null) {
+            const persisted: Record<string, { providerID: string; modelID: string }> = {}
+            for (const [agent, entry] of Object.entries(value.agents as Record<string, unknown>)) {
+              if (
+                entry &&
+                typeof entry === "object" &&
+                typeof (entry as Record<string, unknown>).providerID === "string" &&
+                typeof (entry as Record<string, unknown>).modelID === "string"
+              ) {
+                persisted[agent] = {
+                  providerID: (entry as Record<string, unknown>).providerID as string,
+                  modelID: (entry as Record<string, unknown>).modelID as string,
+                }
+              }
+            }
+            const unbound = modelStore.sessionID === undefined
+            for (const [agent, model] of Object.entries(persisted)) {
+              if (unbound && !modelStore.model[agent]) {
+                // Home/draft scope: seed the live overrides. The homeAgents
+                // effect snapshots them into the draft on its next run.
+                setModelStore("model", agent, model)
+              } else if (!unbound && !homeAgents[agent]) {
+                // A session is already bound (e.g. --continue into an
+                // existing session): writing into the store here would
+                // contaminate the session scope AFTER bindExistingSession
+                // cleared it and history restore seeded the session's own
+                // models. Restore into the frozen draft only, so the next
+                // home/new session still inherits it.
+                homeAgents[agent] = model
+              }
+            }
+          }
         })
         .catch(() => {})
         .finally(() => {
@@ -279,11 +323,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }
 
-        for (const item of modelStore.recent) {
-          if (isModelValid(item)) {
-            return item
-          }
-        }
+        // NOTE: recent is intentionally NOT a fallback. It is a shared,
+        // agent-agnostic list used only by the model picker dialog. Using it
+        // here would resolve every agent without an override to the most
+        // recently picked model — leaking one agent's pick into another.
 
         const provider = sync.data.provider[0]
         if (!provider) return undefined
@@ -303,12 +346,45 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return resolveModel(isModelValid, override, a.model, fallbackModel())
       }
 
-      function bindSession() {
-        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
-        if (modelStore.sessionID === sessionID) return
+      function attachNewSession(sessionID: string) {
+        // Home/draft scope → brand-new session: transfer the draft per-agent
+        // picks unchanged. Called by the prompt submit right after
+        // session.create() succeeds, before the first prompt is sent.
         batch(() => {
           setModelStore("sessionID", sessionID)
-          setModelStore("model", {})
+        })
+      }
+
+      function bindExistingSession(sessionID: string) {
+        // Entering an existing session (opened from home, or a session
+        // switch): discard the previous scope. Per-agent message history
+        // restores the session's own models below.
+        batch(() => {
+          setModelStore("sessionID", sessionID)
+          // setStore("model", {}) does NOT remove existing nested keys in
+          // SolidJS, so clear each known agent explicitly.
+          for (const item of agent.list()) {
+            setModelStore("model", item.name, undefined as never)
+          }
+        })
+      }
+
+      function unbindSession() {
+        // Returning to the home/draft scope: restore the frozen draft. The
+        // overrides currently in the store belong to the session we just
+        // left (restored from ITS message history) and must not become the
+        // home draft — otherwise one session's models leak into save()
+        // and every future session.
+        batch(() => {
+          setModelStore("sessionID", undefined as string | undefined)
+          // setStore("model", {}) does NOT remove existing nested keys in
+          // SolidJS, so clear each known agent explicitly, then seed the
+          // draft back.
+          for (const item of agent.list()) {
+            setModelStore("model", item.name, undefined as never)
+            const draft = homeAgents[item.name]
+            if (draft) setModelStore("model", item.name, { ...draft })
+          }
         })
       }
 
@@ -341,10 +417,22 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return variants && Object.hasOwn(variants, value) ? value : undefined
       }
 
+      createEffect(() => {
+        if (modelStore.sessionID === undefined) {
+          homeAgents = { ...modelStore.model }
+        }
+      })
+
       return {
         current: currentModel,
         forAgent: modelFor,
         variantFor,
+        attachNewSession,
+        bindExistingSession,
+        unbindSession,
+        scope() {
+          return modelStore.sessionID
+        },
         get ready() {
           return modelStore.ready
         },
@@ -384,7 +472,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!val) return
           const a = agent.current()
           if (!a) return
-          bindSession()
           setModelStore("model", a.name, { ...val })
           modelSelected(val)
         },
@@ -414,10 +501,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!next) return
           const a = agent.current()
           if (!a) return
-          bindSession()
           for (const ag of agent.list()) {
-            const current = modelFor(ag)
-            if (current) setModelStore("model", ag.name, { ...current })
+            // Only pin agents with an explicit override. Resolving via
+            // modelFor() falls back to the shared fallback chain, which
+            // would pin every unset agent to the same model (contamination).
+            const explicit = modelStore.model[ag.name]
+            if (explicit && isModelValid(explicit)) setModelStore("model", ag.name, { ...explicit })
           }
           setModelStore("model", a.name, { ...next })
           setModelStore("recent", recentModels(next, modelStore.recent))
@@ -428,13 +517,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const names = new Set(agent.list().map((item) => item.name))
           batch(() => {
             setModelStore("sessionID", sessionID)
-            if (Object.keys(models).length === 0) {
-              // Explicit reset (session switch) — clear all overrides.
-              // setStore("model", {}) does NOT remove existing nested keys,
-              // so clear each known agent explicitly.
-              for (const name of names) setModelStore("model", name, undefined as never)
-              return
-            }
             // Merge, don't replace: only update agents with a matching
             // message. A full replace wipes agents whose last message was
             // pruned by compaction, causing them to fall back to a recent
@@ -458,11 +540,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             const a = agent.current()
             if (!a) return
-            bindSession()
             if (options?.recent) {
               for (const ag of agent.list()) {
-                const current = modelFor(ag)
-                if (current) setModelStore("model", ag.name, { ...current })
+                // Only pin agents with an explicit override. Resolving via
+                // modelFor() falls back to the shared fallback chain, which
+                // would pin every unset agent to the same model (contamination).
+                const explicit = modelStore.model[ag.name]
+                if (explicit && isModelValid(explicit)) setModelStore("model", ag.name, { ...explicit })
               }
             }
             setModelStore("model", a.name, model)
@@ -570,23 +654,36 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     // session. After that, the user's manual choice (or plan↔build flow)
     // must win over any later message sync that touches the same session.
     let agentRestoredFor: string | undefined
+    // Same once-per-session guard for model.restore. Restoring from message
+    // history runs at most once per session so that a later sync refresh or
+    // compaction — which can temporarily yield an empty/partial message list
+    // — cannot wipe the user's explicit model picks.
+    let modelsRestoredFor: string | undefined
     createEffect(() => {
       if (route.data.type !== "session") {
+        // Leaving a session → home/draft scope. Overrides are kept so the
+        // draft (and a session created from it) continues from the last picks.
+        if (syncedSessionID !== undefined) model.unbindSession()
         syncedSessionID = undefined
         syncedModels = undefined
         agentRestoredFor = undefined
+        modelsRestoredFor = undefined
         return
       }
       const sessionID = route.data.sessionID
+      // Placeholder route (e.g. `--continue` starts on sessionID "dummy"
+      // before the session list loads). Never bind or clear for it.
+      if (!sessionID.startsWith("ses_")) return
       if (sessionID !== syncedSessionID) {
-        const wasHome = syncedSessionID === undefined
         syncedSessionID = sessionID
         syncedModels = undefined
         agentRestoredFor = undefined
-        // Preserve model overrides picked on the home screen when the user
-        // sends the first message (home → session). Only clear when
-        // switching between existing sessions to avoid leaking models.
-        if (!wasHome) model.restore(sessionID, {})
+        modelsRestoredFor = undefined
+        // Reset overrides only when entering a session that was NOT already
+        // bound by attachNewSession (home → brand-new session). Opening an
+        // existing session or switching sessions discards the previous scope;
+        // per-agent message history restores the session's own models below.
+        if (model.scope() !== sessionID) model.bindExistingSession(sessionID)
       }
       const messages = sync.data.message[sessionID]
       if (!messages) return
@@ -601,7 +698,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const fingerprint = JSON.stringify(restored)
       if (fingerprint === syncedModels) return
       syncedModels = fingerprint
-      model.restore(sessionID, restored)
+      // Only restore from messages once per session, and only when there is
+      // something to restore. An empty `restored` means the sync briefly lost
+      // the message list (refresh/reconnect) — restoring would clear all
+      // overrides and fall back to the shared default. After the first
+      // non-empty restore, the user's explicit picks win over message history.
+      if (Object.keys(restored).length > 0 && modelsRestoredFor !== sessionID) {
+        modelsRestoredFor = sessionID
+        model.restore(sessionID, restored)
+      }
 
       const message = messages.findLast((candidate) => candidate.role === "user")
       if (!message || message.role !== "user") return
