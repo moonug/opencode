@@ -646,6 +646,34 @@ it.instance(
   },
 )
 
+it.instance(
+  "object-form jsonc references are allowed for external_directory",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const build = yield* load((svc) => svc.get("build"))
+      const target = path.resolve(test.directory, "../docs/reference/sub/notes.md")
+      const runtimePattern = path.join(path.dirname(target), "*")
+
+      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", runtimePattern, build!.permission).action).toBe("allow")
+    }),
+  {
+    git: true,
+    init: (directory) =>
+      Effect.promise(() =>
+        Bun.write(
+          path.join(directory, "opencode.jsonc"),
+          JSON.stringify({
+            references: {
+              docs: { path: "../docs", description: "documentation files" },
+            },
+          }),
+        ),
+      ),
+  },
+)
+
 it.instance("defaultAgent returns build when no default_agent config", () =>
   Effect.gen(function* () {
     const agent = yield* load((svc) => svc.defaultAgent())

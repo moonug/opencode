@@ -467,7 +467,7 @@ const layer = Layer.effect(
               yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
               throw error
             }
-            const model = input.model ?? agent.model ?? (yield* currentModel(input.sessionID))
+            const model = input.model ?? agent.model ?? (yield* currentModel(input.sessionID, agent.name))
             const userMsg: SessionV1.User = {
               id: input.messageID ?? MessageID.ascending(),
               sessionID: input.sessionID,
@@ -612,22 +612,34 @@ const layer = Layer.effect(
       return yield* Effect.die(err)
     })
 
-    const currentModel = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const current = yield* db
-        .select({ model: SessionTable.model })
-        .from(SessionTable)
-        .where(eq(SessionTable.id, sessionID))
-        .get()
-        .pipe(Effect.orDie)
-      if (current?.model) {
-        return {
-          providerID: ProviderV2.ID.make(current.model.providerID),
-          modelID: ModelV2.ID.make(current.model.id),
-          ...(current.model.variant && current.model.variant !== "default" ? { variant: current.model.variant } : {}),
+    const currentModel = Effect.fnUntraced(function* (sessionID: SessionID, agentName?: string) {
+      // When resolving for a specific agent, skip the session-level model:
+      // it was set at session creation and may belong to a DIFFERENT agent
+      // (e.g., plan). Reusing it for another agent (e.g., build) is model
+      // contamination.
+      if (!agentName) {
+        const current = yield* db
+          .select({ model: SessionTable.model })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        if (current?.model) {
+          return {
+            providerID: ProviderV2.ID.make(current.model.providerID),
+            modelID: ModelV2.ID.make(current.model.id),
+            ...(current.model.variant && current.model.variant !== "default" ? { variant: current.model.variant } : {}),
+          }
         }
       }
       const match = yield* sessions
-        .findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
+        .findMessage(
+          sessionID,
+          (m) =>
+            m.info.role === "user" &&
+            !!m.info.model &&
+            (!agentName || m.info.agent === agentName),
+        )
         .pipe(Effect.orDie)
       if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
       return yield* provider.defaultModel().pipe(Effect.orDie)
@@ -644,7 +656,7 @@ const layer = Layer.effect(
         throw error
       }
 
-      const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
+      const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID, ag.name))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
       const full =
         !input.variant && ag.variant && same
@@ -1419,7 +1431,7 @@ const layer = Layer.effect(
           if (cmdAgent?.model) return cmdAgent.model
         }
         if (input.model) return Provider.parseModel(input.model)
-        return yield* currentModel(input.sessionID)
+        return yield* currentModel(input.sessionID, agentName)
       })
 
       yield* getModel(taskModel.providerID, taskModel.modelID, input.sessionID)
@@ -1458,7 +1470,7 @@ const layer = Layer.effect(
       const userModel = isSubtask
         ? input.model
           ? Provider.parseModel(input.model)
-          : yield* currentModel(input.sessionID)
+          : yield* currentModel(input.sessionID, userAgent)
         : taskModel
 
       yield* plugin.trigger(
