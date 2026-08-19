@@ -1,15 +1,21 @@
 import { describe, expect } from "bun:test"
-import { Effect, Exit, Scope } from "effect"
+import { Effect, Exit, Layer, Scope } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Location } from "@opencode-ai/core/location"
 import { AgentPlugin } from "@opencode-ai/core/plugin/agent"
+import { Reference } from "@opencode-ai/core/reference"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 import { agentHost, host } from "./plugin/host"
 
-const it = testEffect(AppNodeBuilder.build(AgentV2.node))
+const emptyReference = Reference.Service.of({
+  list: () => Effect.succeed([]),
+  transform: () => Effect.die("unused reference.transform"),
+  reload: () => Effect.die("unused reference.reload"),
+})
+const it = testEffect(Layer.merge(AppNodeBuilder.build(AgentV2.node), Layer.succeed(Reference.Service, emptyReference)))
 
 describe("AgentV2", () => {
   it.effect("starts without agents", () =>
@@ -126,6 +132,47 @@ describe("AgentV2", () => {
       for (const item of agents) {
         expect(item.permissions.some((rule) => rule.action === "bash" && rule.effect !== "deny")).toBe(false)
       }
+    }),
+  )
+
+  it.effect("allows configured reference directories", () =>
+    Effect.gen(function* () {
+      const agent = yield* AgentV2.Service
+      const referenceDirectory = AbsolutePath.make("/references/docs")
+      const reference = Reference.Service.of({
+        list: () =>
+          Effect.succeed([
+            new Reference.Info({
+              name: "docs",
+              path: referenceDirectory,
+              source: {
+                type: "local",
+                path: referenceDirectory,
+              },
+            }),
+          ]),
+        transform: () => Effect.die("unused reference.transform"),
+        reload: () => Effect.die("unused reference.reload"),
+      })
+
+      yield* AgentPlugin.Plugin.effect(
+        host({
+          agent: agentHost(agent),
+        }),
+      ).pipe(
+        Effect.provideService(
+          Location.Service,
+          Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+        ),
+        Effect.provideService(Reference.Service, reference),
+      )
+
+      const build = yield* agent.get(AgentV2.ID.make("build"))
+      expect(build?.permissions).toContainEqual({
+        action: "external_directory",
+        resource: "/references/docs/*",
+        effect: "allow",
+      })
     }),
   )
 })
