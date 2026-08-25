@@ -1,5 +1,6 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { registerOpencodeSpinner } from "./component/register-spinner"
+import { SpinnerFocusProvider } from "./component/spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
@@ -244,15 +245,16 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
 
         await render(() => {
           return (
-            <ExitProvider
-              exit={(reason) => {
-                if (renderer.isDestroyed) return
-                exit.reason = reason
-                destroyRenderer(renderer)
-              }}
-            >
-              <EpilogueProvider set={(value) => (exit.epilogue = value)}>
-                <ErrorBoundary fallback={(error, reset) => <ErrorComponent error={error} reset={reset} mode={mode} />}>
+            <SpinnerFocusProvider>
+              <ExitProvider
+                exit={(reason) => {
+                  if (renderer.isDestroyed) return
+                  exit.reason = reason
+                  destroyRenderer(renderer)
+                }}
+              >
+                <EpilogueProvider set={(value) => (exit.epilogue = value)}>
+                  <ErrorBoundary fallback={(error, reset) => <ErrorComponent error={error} reset={reset} mode={mode} />}>
                   <TuiPathsProvider
                     value={{
                       cwd: process.cwd(),
@@ -344,9 +346,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                       </TuiStartupProvider>
                     </TuiTerminalEnvironmentProvider>
                   </TuiPathsProvider>
-                </ErrorBoundary>
-              </EpilogueProvider>
-            </ExitProvider>
+                  </ErrorBoundary>
+                </EpilogueProvider>
+              </ExitProvider>
+            </SpinnerFocusProvider>
           )
         }, renderer)
       })
