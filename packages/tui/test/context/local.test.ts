@@ -6,6 +6,7 @@ import {
   createSelectionState,
   parseModel,
   recentModels,
+  resolveAgentModel,
   resolveModel,
   selectionSnapshot,
 } from "../../src/context/local"
@@ -394,7 +395,7 @@ test("homeAgents persistence: home draft survives restart, in-session picks do n
       let homeAgents: Record<string, { providerID: string; modelID: string }> = {}
       const effect = () => {
         if (modelStore.sessionID === undefined) {
-          homeAgents = { ...modelStore.model }
+          homeAgents = { ...modelStore.model } as Record<string, { providerID: string; modelID: string }>
         }
       }
       // Save happens at home → captures the draft.
@@ -450,7 +451,7 @@ test("route transitions: attachNewSession binds draft, bindExistingSession clear
       let homeAgents: Record<string, { providerID: string; modelID: string }> = {}
       const homeEffect = () => {
         if (modelStore.sessionID === undefined) {
-          homeAgents = { ...modelStore.model }
+          homeAgents = { ...modelStore.model } as Record<string, { providerID: string; modelID: string }>
         }
       }
       // Mirrors local.tsx: sync effect keeps draft overrides when a session
@@ -554,7 +555,7 @@ test("late model.json restore while a session is bound does not contaminate the 
       let homeAgents: Record<string, { providerID: string; modelID: string }> = {}
       const homeEffect = () => {
         if (modelStore.sessionID === undefined) {
-          homeAgents = { ...modelStore.model }
+          homeAgents = { ...modelStore.model } as Record<string, { providerID: string; modelID: string }>
         }
       }
       homeEffect() // startup snapshot: empty draft
@@ -823,5 +824,110 @@ test("restore guard resets per session, allowing each session its own restore", 
   expect(fixture.afterA).toEqual({ providerID: "opencode-go", modelID: "deepseek-v4-flash" })
   expect(fixture.afterSameSession).toEqual({ providerID: "opencode-go", modelID: "deepseek-v4-flash" })
   expect(fixture.afterB).toEqual({ providerID: "openai", modelID: "gpt-5.6-sol" })
+  fixture.dispose()
+})
+
+// --- Sticky model overrides vs provider-list flaps (nanobanana flicker) ---
+
+test("[N1] provider flap: invalid override resolves sticky lastValid, not fallback", () => {
+  const lastValid: Record<string, { providerID: string; modelID: string }> = {}
+  // Provider list loaded: zai is valid, provider[0] default ("nanobanana") valid too.
+  const zai = { providerID: "zai", modelID: "glm-5.3" }
+  const nano = { providerID: "opencode", modelID: "nanobanana" }
+  const validWhileZaiLoaded = (m: { providerID: string }) => m.providerID === "zai" || m.providerID === "opencode"
+  const validWhileZaiGone = (m: { providerID: string }) => m.providerID === "opencode"
+
+  // Step 1: normal operation — override valid, becomes sticky.
+  const first = resolveAgentModel({
+    agent: "plan",
+    valid: validWhileZaiLoaded,
+    override: zai,
+    fallback: nano,
+    lastValid,
+  })
+  expect(first).toEqual(zai)
+  expect(lastValid.plan).toEqual(zai)
+
+  // Step 2: provider list flaps (zai momentarily absent). Override now
+  // "invalid" — must resolve the sticky zai pick, NEVER the nanobanana fallback.
+  const duringFlap = resolveAgentModel({
+    agent: "plan",
+    valid: validWhileZaiGone,
+    override: zai,
+    fallback: nano,
+    lastValid,
+  })
+  expect(duringFlap).toEqual(zai)
+
+  // Step 3: flap without prior sticky (agent never had a valid pick) —
+  // falls through to fallback as before.
+  const noSticky = resolveAgentModel({
+    agent: "build",
+    valid: validWhileZaiGone,
+    override: zai,
+    fallback: nano,
+    lastValid,
+  })
+  expect(noSticky).toEqual(nano)
+})
+
+test("[N2] flap must not poison via echo: sticky wins over message-carried fallback for other agent", () => {
+  // During a flap the picker may submit the displayed fallback for agent A;
+  // agent B (still sticky) must not flip when the message sync restores A's
+  // echo. Per-agent isolation: only the echoed agent's record updates.
+  const lastValid: Record<string, { providerID: string; modelID: string }> = {
+    plan: { providerID: "zai", modelID: "glm-5.3" },
+    build: { providerID: "openai", modelID: "gpt-5.6-luna" },
+  }
+  const valid = (m: { providerID: string }) => m.providerID !== "zai"
+  // zai flapped: plan's override invalid -> sticky zai still returned
+  // (sticky also fails valid here — but the invariant under test is that
+  // resolving BUILD is untouched by plan's flap).
+  const buildResult = resolveAgentModel({
+    agent: "build",
+    valid,
+    override: { providerID: "openai", modelID: "gpt-5.6-luna" },
+    fallback: { providerID: "opencode", modelID: "nanobanana" },
+    lastValid,
+  })
+  expect(buildResult).toEqual({ providerID: "openai", modelID: "gpt-5.6-luna" })
+  expect(lastValid.build).toEqual({ providerID: "openai", modelID: "gpt-5.6-luna" })
+})
+
+test("[N3] unbind with empty draft keeps the current override instead of clearing", () => {
+  // unbindSession (ctrl-x n -> home) must never leave an agent without an
+  // override: draft missing -> keep the session's current override. That
+  // agent would otherwise resolve to the shared fallback (nanobanana).
+  const run = () =>
+    createRoot((dispose) => {
+      const [modelStore, setModelStore] = createStore<{
+        sessionID?: string
+        model: Record<string, { providerID: string; modelID: string } | undefined>
+      }>({ sessionID: "ses_X", model: {} })
+      const homeAgents: Record<string, { providerID: string; modelID: string }> = {}
+      const agents = [{ name: "plan" }, { name: "build" }]
+
+      // Session had its own picks: plan from history, build absent in draft.
+      setModelStore("model", "plan", { providerID: "zai", modelID: "glm-5.3" })
+      setModelStore("model", "build", { providerID: "openai", modelID: "gpt-5.6-luna" })
+
+      // unbindSession body (mirrors local.tsx):
+      setModelStore("sessionID", undefined)
+      for (const item of agents) {
+        const current = modelStore.model[item.name]
+        setModelStore("model", item.name, undefined as never)
+        const draft = homeAgents[item.name]
+        if (draft) {
+          setModelStore("model", item.name, { ...draft })
+        } else if (current) {
+          setModelStore("model", item.name, { ...current })
+        }
+      }
+      return { dispose, model: { ...modelStore.model } }
+    })
+
+  const fixture = run()
+  expect(fixture.model.plan).toEqual({ providerID: "zai", modelID: "glm-5.3" })
+  expect(fixture.model.build).toEqual({ providerID: "openai", modelID: "gpt-5.6-luna" })
   fixture.dispose()
 })

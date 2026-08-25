@@ -62,6 +62,43 @@ export function resolveModel(
   return models.find((model) => model && valid(model))
 }
 
+/**
+ * Sticky-override resolution. Mirrors modelFor's semantics as a pure
+ * function so the provider-flap behavior is unit-testable:
+ *  - valid override wins and updates `lastValid`
+ *  - INVALID override (provider list flapped) resolves the sticky
+ *    last-known-valid model for that agent — never the shared fallback —
+ *    so a provider blink cannot flip an agent to provider[0]'s default
+ *    (the nanobanana flicker) or leak it into a submitted prompt.
+ */
+export function resolveAgentModel(input: {
+  agent: string
+  valid: (model: { providerID: string; modelID: string }) => boolean
+  override?: { providerID: string; modelID: string }
+  configured?: { providerID: string; modelID: string }
+  fallback?: { providerID: string; modelID: string }
+  lastValid: Record<string, { providerID: string; modelID: string }>
+  onDiscard?: (agent: string, model: { providerID: string; modelID: string }, via: "sticky" | "fallback") => void
+}): { providerID: string; modelID: string } | undefined {
+  const { agent, valid, override, configured, fallback, lastValid, onDiscard } = input
+  if (override && valid(override)) {
+    lastValid[agent] = override
+    return override
+  }
+  if (override) {
+    const sticky = lastValid[agent]
+    if (sticky) {
+      // sticky entries only enter the map after passing `valid`, i.e. they
+      // are last-known-GOOD. Re-validating against the currently flapping
+      // provider list would reject them too — exactly what must not happen.
+      onDiscard?.(agent, override, "sticky")
+      return sticky
+    }
+    onDiscard?.(agent, override, "fallback")
+  }
+  return resolveModel(valid, configured, fallback)
+}
+
 export function selectionSnapshot<Agent extends { name: string }>(input: {
   sessionID?: string
   agent?: string
@@ -242,6 +279,29 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         { providerID: string; modelID: string }
       > = {}
 
+      // Last override that PASSED isModelValid, per agent. When the provider
+      // list flaps and an override momentarily fails validation, modelFor
+      // resolves the sticky entry instead of the shared fallback so agents
+      // never flip to provider[0]'s default (nanobanana flicker).
+      const lastValid: Record<string, { providerID: string; modelID: string }> = {}
+
+      // Rate-limited diagnostics for discarded overrides (provider flap).
+      let lastInvalidLogAt = 0
+      function logInvalidOverrideDiscarded(
+        agent: string,
+        model: { providerID: string; modelID: string },
+        via: "sticky" | "fallback",
+      ) {
+        const now = Date.now()
+        if (now - lastInvalidLogAt < 10_000) return
+        lastInvalidLogAt = now
+        console.error(
+          `local: model override for '${agent}' (${model.providerID}/${model.modelID}) failed validation ` +
+            `(providers loaded: ${sync.data.provider.length}); resolving via ${via}. ` +
+            `If this repeats, the provider list is flapping.`,
+        )
+      }
+
       function save() {
         if (!modelStore.ready) {
           state.pending = true
@@ -324,7 +384,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       function modelFor(a: { name: string; model?: { providerID: string; modelID: string } }) {
         const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
         const override = modelStore.sessionID === sessionID ? modelStore.model[a.name] : undefined
-        return resolveModel(isModelValid, override, a.model, fallbackModel())
+        // Sticky-override resolution: a provider-list flap (auth refresh /
+        // sync re-batch) must never resolve an agent that had a valid pick
+        // to the shared fallback — that flip is the nanobanana flicker, and
+        // a prompt submitted in that window would poison the session.
+        return resolveAgentModel({
+          agent: a.name,
+          valid: isModelValid,
+          override,
+          configured: a.model,
+          fallback: fallbackModel(),
+          lastValid,
+          onDiscard: logInvalidOverrideDiscarded,
+        })
       }
 
       function attachNewSession(sessionID: string) {
@@ -355,16 +427,25 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         // overrides currently in the store belong to the session we just
         // left (restored from ITS message history) and must not become the
         // home draft — otherwise one session's models leak into save()
-        // and every future session.
+        // and every future session. (The persisted draft is homeAgents —
+        // what save() writes — so keeping a session override in the LIVE
+        // store does not contaminate model.json.)
         batch(() => {
           setModelStore("sessionID", undefined as string | undefined)
           // setStore("model", {}) does NOT remove existing nested keys in
           // SolidJS, so clear each known agent explicitly, then seed the
-          // draft back.
+          // draft back. An agent missing from the draft KEEPS the session's
+          // current override — leaving it cleared would resolve to the
+          // shared fallback (nanobanana flicker) on the home screen.
           for (const item of agent.list()) {
+            const current = modelStore.model[item.name]
             setModelStore("model", item.name, undefined as never)
             const draft = homeAgents[item.name]
-            if (draft) setModelStore("model", item.name, { ...draft })
+            if (draft) {
+              setModelStore("model", item.name, { ...draft })
+            } else if (current) {
+              setModelStore("model", item.name, { ...current })
+            }
           }
         })
       }
